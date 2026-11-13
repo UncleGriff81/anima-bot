@@ -4,7 +4,7 @@ import sqlite3
 import os
 import json
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
@@ -55,6 +55,49 @@ async def select_scenario(scenario_id: int, user_id: int):
         "UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?",
         (user_id, now_str, scenario_id)
     )
+    conn.commit()
+    conn.close()
+    return {"success": True}
+
+@app.post("/api/cancel_scenario/{scenario_id}")
+async def cancel_scenario(scenario_id: int, user_id: int):
+    """Отмена сценария (только для того, кто взял)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Проверяем, что сценарий взят именно этим пользователем
+    cursor.execute("SELECT status, animator_id, selected_at FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    
+    if not res or res[0] != 'taken' or res[1] != user_id:
+        conn.close()
+        return {"error": "Вы не можете отменить этот сценарий"}
+    
+    # Проверка на 12 часов
+    if res[2]:
+        selected_at = datetime.strptime(res[2], "%Y-%m-%d %H:%M:%S.%f")
+        if datetime.now() - selected_at > timedelta(hours=12):
+            conn.close()
+            return {"error": "Отменить можно только в первые 12 часов"}
+    
+    cursor.execute("UPDATE scenarios SET status = 'free', animator_id = NULL, selected_at = NULL WHERE id = ?", (scenario_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True}
+
+@app.post("/api/complete_scenario/{scenario_id}")
+async def complete_scenario(scenario_id: int, user_id: int):
+    """Завершение сценария (только для того, кто взял)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, animator_id FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    
+    if not res or res[0] != 'taken' or res[1] != user_id:
+        conn.close()
+        return {"error": "Вы не можете завершить этот сценарий"}
+    
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET status = 'completed', completed_at = ? WHERE id = ?", (now_str, scenario_id))
     conn.commit()
     conn.close()
     return {"success": True}
@@ -114,7 +157,6 @@ async def get_audio(file_id: str):
             if file_response.status != 200: return Response(content="Error", status_code=500)
             
             file_bytes = await file_response.read()
-            # Заголовок для скачивания файла
             headers = {"Content-Disposition": f'attachment; filename="{file_id}.mp3"'}
             return Response(content=file_bytes, media_type="audio/mpeg", headers=headers)
 
