@@ -4,10 +4,10 @@ import sqlite3
 import os
 import json
 import aiohttp
+from datetime import datetime
 
 app = FastAPI()
 
-# Разрешаем MiniApp обращаться к этому серверу
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -15,10 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Определяем путь к базе данных
 DB_PATH = '/data/anima.db' if os.path.exists('/data') else 'anima.db'
-
-# Токен бота (берется из переменных окружения Railway)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 @app.get("/api/scenarios")
@@ -41,6 +38,26 @@ async def get_scenarios():
             "audio_id": row[6]
         })
     return {"scenarios": result}
+
+@app.post("/api/select_scenario/{scenario_id}")
+async def select_scenario(scenario_id: int, user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    
+    if not res or res[0] != 'free':
+        conn.close()
+        return {"error": "Сценарий уже занят или не найден"}
+        
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute(
+        "UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?",
+        (user_id, now_str, scenario_id)
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True}
 
 @app.get("/api/my_scenarios/{user_id}")
 async def get_my_scenarios(user_id: int):
@@ -71,30 +88,35 @@ async def get_all_animators():
 
 @app.get("/api/image/{file_id}")
 async def get_image(file_id: str):
-    """Скачивает картинку с Telegram и отдаёт её браузеру напрямую"""
-    if not BOT_TOKEN:
-        return Response(content="Bot token not configured", status_code=500)
-        
+    if not BOT_TOKEN: return Response(content="Bot token not configured", status_code=500)
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем путь к файлу
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
         async with session.get(url) as response:
             data = await response.json()
-            
-        if not data.get("ok"):
-            return Response(content="File not found", status_code=404)
-            
+        if not data.get("ok"): return Response(content="File not found", status_code=404)
         file_path = data["result"]["file_path"]
-        
-        # 2. Скачиваем сам файл
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         async with session.get(file_url) as file_response:
-            if file_response.status != 200:
-                return Response(content="Error downloading file", status_code=500)
+            if file_response.status != 200: return Response(content="Error", status_code=500)
+            return Response(content=await file_response.read(), media_type="image/jpeg")
+
+@app.get("/api/audio/{file_id}")
+async def get_audio(file_id: str):
+    if not BOT_TOKEN: return Response(content="Bot token not configured", status_code=500)
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+        async with session.get(url) as response:
+            data = await response.json()
+        if not data.get("ok"): return Response(content="File not found", status_code=404)
+        file_path = data["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with session.get(file_url) as file_response:
+            if file_response.status != 200: return Response(content="Error", status_code=500)
             
-            # Читаем байты и отдаём их клиенту
             file_bytes = await file_response.read()
-            return Response(content=file_bytes, media_type="image/jpeg")
+            # Заголовок для скачивания файла
+            headers = {"Content-Disposition": f'attachment; filename="{file_id}.mp3"'}
+            return Response(content=file_bytes, media_type="audio/mpeg", headers=headers)
 
 if __name__ == "__main__":
     import uvicorn
