@@ -338,6 +338,19 @@ async def process_select(callback: types.CallbackQuery):
 async def my_scenarios(message: types.Message):
     await my_scenarios_menu(message)
 
+@dp.message(Command("force_admin"))
+async def force_admin(message: types.Message):
+    """Временная команда для назначения себя админом"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Вы не в списке админов.")
+        return
+        
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (message.from_user.id,))
+    conn.commit(); conn.close()
+    
+    await message.answer("✅ Ваша роль обновлена на 'admin'. Нажмите /start, чтобы увидеть меню.")
+
 @dp.callback_query(F.data.startswith("complete_"))
 async def process_complete(callback: types.CallbackQuery):
     scenario_id = int(callback.data.split("_")[1]); conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
