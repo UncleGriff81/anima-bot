@@ -1,9 +1,14 @@
 import sqlite3
+import os
 
 def init_db():
-    conn = sqlite3.connect('anima.db')
+    # Если папка /data существует (на Railway), используем её. Иначе - текущую папку.
+    db_path = '/data/anima.db' if os.path.exists('/data') else 'anima.db'
+    
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -12,7 +17,7 @@ def init_db():
         )
     ''')
 
-    # Добавили поле scenes_count (кол-во сцен), scenes_data (текст и фото), audio_file_id
+    # Таблица сценариев
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS scenarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +35,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print("База данных пересоздана с новыми полями.")
+    print(f"База данных инициализирована. Путь: {db_path}")
 
 if __name__ == "__main__":
     init_db()

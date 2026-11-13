@@ -11,7 +11,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.utils.markdown import hbold
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "9102167219:AAEMqwGo-ecnnR4SJeCVcSgcrRObYpf4FQs" # ВСТАВЬ СВОЙ ТОКЕН!
+import os
+# Берем токен из переменных окружения (для Railway), если нет - используем запасной вариант
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_ЗДЕСЬ")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -34,7 +36,6 @@ skip_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Пропустит
 def get_control_buttons(scenario_id, selected_at_str):
     kb = [[InlineKeyboardButton(text="✅ Завершить", callback_data=f"complete_{scenario_id}")]]
     
-    # Проверяем, прошло ли 12 часов с момента выбора
     if selected_at_str:
         selected_at = datetime.strptime(selected_at_str, "%Y-%m-%d %H:%M:%S.%f")
         if datetime.now() - selected_at < timedelta(hours=12):
@@ -44,7 +45,7 @@ def get_control_buttons(scenario_id, selected_at_str):
 
 # --- ФУНКЦИЯ ОТПРАВКИ ДЕТАЛЕЙ СЦЕНАРИЯ ---
 async def send_scenario_details(target_message: types.Message, scenario_id: int, show_buttons=True):
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute("SELECT title, description, scenes_data, audio_file_id, status FROM scenarios WHERE id = ?", (scenario_id,))
     row = cursor.fetchone()
@@ -163,7 +164,7 @@ async def process_audio(message: types.Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO scenarios (title, description, scenes_count, scenes_data, audio_file_id) VALUES (?, ?, ?, ?, ?)",
@@ -183,7 +184,7 @@ async def cancel_add(message: types.Message, state: FSMContext):
 
 @dp.message(Command("list_scenarios"))
 async def list_scenarios(message: types.Message):
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute("SELECT id, title FROM scenarios WHERE status = 'free'")
     scenarios = cursor.fetchall()
@@ -212,7 +213,7 @@ async def process_select(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username or callback.from_user.first_name
     
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute("SELECT status, title FROM scenarios WHERE id = ?", (scenario_id,))
     result = cursor.fetchone()
@@ -241,7 +242,7 @@ async def process_select(callback: types.CallbackQuery):
 @dp.message(Command("my_scenarios"))
 async def my_scenarios(message: types.Message):
     user_id = message.from_user.id
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute("SELECT id, title, selected_at FROM scenarios WHERE status = 'taken' AND animator_id = ?", (user_id,))
     scenarios = cursor.fetchall()
@@ -253,7 +254,6 @@ async def my_scenarios(message: types.Message):
 
     await message.answer(f"📂 {hbold('Ваши ролики в работе:')}", parse_mode="HTML")
     for scenario in scenarios:
-        # Передаем дату выбора в функцию, чтобы она решила, показывать ли кнопку отмены
         kb = get_control_buttons(scenario[0], scenario[2])
         await message.answer(f"📌 {hbold(scenario[1])}", reply_markup=kb, parse_mode="HTML")
 
@@ -262,7 +262,7 @@ async def my_scenarios(message: types.Message):
 @dp.callback_query(F.data.startswith("complete_"))
 async def process_complete(callback: types.CallbackQuery):
     scenario_id = int(callback.data.split("_")[1])
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     cursor.execute("UPDATE scenarios SET status = 'completed', completed_at = ? WHERE id = ?", (now_str, scenario_id))
@@ -278,8 +278,7 @@ async def process_complete(callback: types.CallbackQuery):
 async def process_cancel(callback: types.CallbackQuery):
     scenario_id = int(callback.data.split("_")[1])
     
-    # Проверяем время еще раз (защита от взлома кнопки)
-    conn = sqlite3.connect('anima.db')
+    conn = sqlite3.connect('/data/anima.db')
     cursor = conn.cursor()
     cursor.execute("SELECT selected_at FROM scenarios WHERE id = ?", (scenario_id,))
     res = cursor.fetchone()
