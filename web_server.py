@@ -26,13 +26,33 @@ app.add_middleware(
 DB_PATH = '/data/anima.db' if os.path.exists('/data') else 'anima.db'
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Регистрируем шрифт с поддержкой кириллицы
-# (на Railway часто есть DejaVuSans, но на всякий случай используем стандартный Helvetica, если что-то пойдет не так)
-try:
-    pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
-    FONT_NAME = 'DejaVu'
-except:
-    FONT_NAME = 'Helvetica'
+# --- НАСТРОЙКА ШРИФТА ДЛЯ КИРИЛЛИЦЫ ---
+FONT_PATH = '/data/DejaVuSans.ttf' if os.path.exists('/data') else 'DejaVuSans.ttf'
+FONT_NAME = 'Helvetica' # По умолчанию
+
+def ensure_font():
+    """Скачивает шрифт DejaVuSans, если его нет, и регистрирует его."""
+    global FONT_NAME
+    if not os.path.exists(FONT_PATH):
+        try:
+            import urllib.request
+            print("⏳ Скачиваем шрифт DejaVuSans.ttf...")
+            url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
+            urllib.request.urlretrieve(url, FONT_PATH)
+            print("✅ Шрифт скачан.")
+        except Exception as e:
+            print(f"❌ Не удалось скачать шрифт: {e}")
+            return
+
+    try:
+        pdfmetrics.registerFont(TTFont('DejaVu', FONT_PATH))
+        FONT_NAME = 'DejaVu'
+        print("✅ Шрифт DejaVu зарегистрирован.")
+    except Exception as e:
+        print(f"❌ Ошибка регистрации шрифта: {e}")
+
+# Вызываем при старте
+ensure_font()
 
 def get_period_name(date_str):
     if not date_str: return "Без периода"
@@ -182,10 +202,10 @@ async def get_audio(file_id: str):
 @app.get("/api/report")
 async def generate_report(start_date: str, end_date: str):
     """Генерирует PDF-отчёт за период start_date - end_date (формат YYYY-MM-DD)"""
+    ensure_font() # Проверяем шрифт перед генерацией
+    
     try:
-        # 1. Забираем данные из базы
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-        # Берем все сценарии, где дата выбора или загрузки попадает в диапазон
         query = """
             SELECT s.title, s.selected_at, s.completed_at, s.uploaded_at, u.username, u.first_name
             FROM scenarios s
@@ -203,7 +223,6 @@ async def generate_report(start_date: str, end_date: str):
         if not rows:
             return Response(content="Нет данных за выбранный период", status_code=404)
 
-        # 2. Генерируем PDF
         buffer = BytesIO()
         p = canvas.Canvas(buffer, pagesize=A4)
         width, height = A4
@@ -213,21 +232,23 @@ async def generate_report(start_date: str, end_date: str):
         p.drawString(20 * mm, y, f"Отчёт за период: {start_date} — {end_date}")
         y -= 15 * mm
 
-        # Группируем по аниматору
         current_animator = None
         animator_titles = []
+        display_name = ""
 
         for row in rows:
             title, selected_at, completed_at, uploaded_at, username, first_name = row
-            # Формируем ключ аниматора
             animator_key = username if username else "Без аниматора"
-            animator_name = f"{first_name} (@{username})" if username else "Без аниматора"
+            
+            if username:
+                display_name = f"{first_name} (@{username})" if first_name else f"@{username}"
+            else:
+                display_name = "Без аниматора"
 
             if animator_key != current_animator:
-                # Если это не первый аниматор, рисуем его таблицу
                 if current_animator is not None:
-                    y = draw_animator_block(p, y, width, current_animator, animator_titles)
-                    if y < 30 * mm: # Новая страница
+                    y = draw_animator_block(p, y, width, display_name, animator_titles)
+                    if y < 30 * mm:
                         p.showPage()
                         y = height - 20 * mm
                 current_animator = animator_key
@@ -240,9 +261,8 @@ async def generate_report(start_date: str, end_date: str):
                 "uploaded_at": uploaded_at.split('.')[0] if uploaded_at else ""
             })
 
-        # Рисуем последнего аниматора
         if current_animator is not None:
-            y = draw_animator_block(p, y, width, current_animator, animator_titles)
+            y = draw_animator_block(p, y, width, display_name, animator_titles)
 
         p.save()
         pdf_bytes = buffer.getvalue()
@@ -255,12 +275,10 @@ async def generate_report(start_date: str, end_date: str):
 
 def draw_animator_block(p, y, width, animator_name, titles):
     """Рисует блок одного аниматора с таблицей"""
-    # Заголовок аниматора
     p.setFont(FONT_NAME, 12)
     p.drawString(20 * mm, y, f"Аниматор: {animator_name}")
     y -= 7 * mm
 
-    # Заголовки таблицы
     p.setFont(FONT_NAME, 10)
     p.drawString(20 * mm, y, "№")
     p.drawString(30 * mm, y, "Название ролика")
@@ -268,25 +286,24 @@ def draw_animator_block(p, y, width, animator_name, titles):
     p.drawString(150 * mm, y, "Сдал")
     y -= 5 * mm
 
-    p.line(20 * mm, y, width - 20 * mm, y) # линия под заголовком
+    p.line(20 * mm, y, width - 20 * mm, y)
     y -= 5 * mm
 
     for idx, item in enumerate(titles, 1):
         p.setFont(FONT_NAME, 9)
         p.drawString(20 * mm, y, str(idx))
-        # Обрезаем длинный текст
         title_text = item['title'][:40] + '...' if len(item['title']) > 40 else item['title']
         p.drawString(30 * mm, y, title_text)
         p.drawString(110 * mm, y, item['selected_at'])
         p.drawString(150 * mm, y, item['completed_at'])
         y -= 5 * mm
         
-        if y < 20 * mm: # Если место кончается, переходим на новую страницу
+        if y < 20 * mm:
             p.showPage()
             p.setFont(FONT_NAME, 10)
             y = A4[1] - 20 * mm
 
-    y -= 10 * mm # Отступ между аниматорами
+    y -= 10 * mm
     return y
 
 if __name__ == "__main__":
