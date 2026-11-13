@@ -50,7 +50,7 @@ def get_main_kb(role: str):
             ],
             resize_keyboard=True
         )
-    else:
+    elif role == 'scenarist':
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📚 Сценарии")],
@@ -58,6 +58,9 @@ def get_main_kb(role: str):
             ],
             resize_keyboard=True
         )
+    else:
+        # Аниматорам клавиатура не нужна
+        return ReplyKeyboardRemove()
 
 def get_scenario_kb(role: str):
     if role in ['admin', 'scenarist']:
@@ -71,12 +74,7 @@ def get_scenario_kb(role: str):
             resize_keyboard=True
         )
     else:
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="⬅️ Назад")]
-            ],
-            resize_keyboard=True
-        )
+        return ReplyKeyboardRemove()
 
 def get_users_kb():
     return ReplyKeyboardMarkup(
@@ -129,11 +127,20 @@ async def cmd_start(message: types.Message):
         print(f"❌ Ошибка сохранения пользователя: {e}")
 
     role = get_user_role(message.from_user.id)
-    await message.answer(f"Привет, {message.from_user.first_name}!\nВыбери раздел:", reply_markup=get_main_kb(role))
+    if role == 'animator':
+        await message.answer(
+            f"Привет, {message.from_user.first_name}!\n\n"
+            "Вся информация доступна в MiniApp. Нажмите кнопку меню рядом с полем ввода, чтобы открыть его.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await message.answer(f"Привет, {message.from_user.first_name}!\nВыбери раздел:", reply_markup=get_main_kb(role))
 
 @dp.message(F.text == "📚 Сценарии")
 async def open_scenarios_menu(message: types.Message):
     role = get_user_role(message.from_user.id)
+    if role == 'animator':
+        return
     await message.answer("Раздел «Сценарии»:", reply_markup=get_scenario_kb(role))
 
 @dp.message(F.text == "👥 Пользователи")
@@ -152,6 +159,9 @@ async def go_back(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "🎞 Мои ролики")
 async def my_scenarios_menu(message: types.Message):
+    role = get_user_role(message.from_user.id)
+    if role == 'animator':
+        return
     user_id = message.from_user.id; conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
     cursor.execute("SELECT id, title, selected_at FROM scenarios WHERE status = 'taken' AND animator_id = ?", (user_id,))
     scenarios = cursor.fetchall(); conn.close()
