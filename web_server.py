@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 async def get_scenarios():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, description, status, animator_id, scenes_data, audio_file_id FROM scenarios ORDER BY id DESC")
+    cursor.execute("SELECT id, title, description, status, animator_id, scenes_data, audio_file_id, work_link FROM scenarios ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
@@ -35,7 +35,8 @@ async def get_scenarios():
             "status": row[3],
             "animator_id": row[4],
             "scenes": json.loads(row[5]) if row[5] else [],
-            "audio_id": row[6]
+            "audio_id": row[6],
+            "work_link": row[7]
         })
     return {"scenarios": result}
 
@@ -45,78 +46,71 @@ async def select_scenario(scenario_id: int, user_id: int):
     cursor = conn.cursor()
     cursor.execute("SELECT status FROM scenarios WHERE id = ?", (scenario_id,))
     res = cursor.fetchone()
-    
     if not res or res[0] != 'free':
         conn.close()
         return {"error": "Сценарий уже занят или не найден"}
-        
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    cursor.execute(
-        "UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?",
-        (user_id, now_str, scenario_id)
-    )
-    conn.commit()
-    conn.close()
+    cursor.execute("UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?", (user_id, now_str, scenario_id))
+    conn.commit(); conn.close()
     return {"success": True}
 
 @app.post("/api/cancel_scenario/{scenario_id}")
 async def cancel_scenario(scenario_id: int, user_id: int):
-    """Отмена сценария (только для того, кто взял)"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Проверяем, что сценарий взят именно этим пользователем
     cursor.execute("SELECT status, animator_id, selected_at FROM scenarios WHERE id = ?", (scenario_id,))
     res = cursor.fetchone()
-    
     if not res or res[0] != 'taken' or res[1] != user_id:
         conn.close()
         return {"error": "Вы не можете отменить этот сценарий"}
-    
-    # Проверка на 12 часов
     if res[2]:
         selected_at = datetime.strptime(res[2], "%Y-%m-%d %H:%M:%S.%f")
         if datetime.now() - selected_at > timedelta(hours=12):
             conn.close()
             return {"error": "Отменить можно только в первые 12 часов"}
-    
     cursor.execute("UPDATE scenarios SET status = 'free', animator_id = NULL, selected_at = NULL WHERE id = ?", (scenario_id,))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
     return {"success": True}
 
 @app.post("/api/complete_scenario/{scenario_id}")
 async def complete_scenario(scenario_id: int, user_id: int):
-    """Завершение сценария (только для того, кто взял)"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT status, animator_id FROM scenarios WHERE id = ?", (scenario_id,))
     res = cursor.fetchone()
-    
     if not res or res[0] != 'taken' or res[1] != user_id:
         conn.close()
         return {"error": "Вы не можете завершить этот сценарий"}
-    
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
     cursor.execute("UPDATE scenarios SET status = 'completed', completed_at = ? WHERE id = ?", (now_str, scenario_id))
-    conn.commit()
-    conn.close()
+    conn.commit(); conn.close()
+    return {"success": True}
+
+@app.post("/api/upload_work/{scenario_id}")
+async def upload_work(scenario_id: int, work_link: str = ""):
+    """Сохраняет дату загрузки и ссылку на работу"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET uploaded_at = ?, work_link = ? WHERE id = ?", (now_str, work_link, scenario_id))
+    conn.commit(); conn.close()
     return {"success": True}
 
 @app.get("/api/my_scenarios/{user_id}")
 async def get_my_scenarios(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT title, selected_at, completed_at, status FROM scenarios WHERE animator_id = ?", (user_id,))
+    cursor.execute("SELECT title, selected_at, completed_at, status, uploaded_at FROM scenarios WHERE animator_id = ?", (user_id,))
     rows = cursor.fetchall()
     conn.close()
-
     result = []
     for row in rows:
         result.append({
             "title": row[0],
             "selected_at": row[1].split('.')[0] if row[1] else "", 
             "completed_at": row[2].split('.')[0] if row[2] else "В работе",
-            "status": row[3]
+            "status": row[3],
+            "uploaded_at": row[4].split('.')[0] if row[4] else ""
         })
     return {"scenarios": result}
 
@@ -155,7 +149,6 @@ async def get_audio(file_id: str):
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         async with session.get(file_url) as file_response:
             if file_response.status != 200: return Response(content="Error", status_code=500)
-            
             file_bytes = await file_response.read()
             headers = {"Content-Disposition": f'attachment; filename="{file_id}.mp3"'}
             return Response(content=file_bytes, media_type="audio/mpeg", headers=headers)
