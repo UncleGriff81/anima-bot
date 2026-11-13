@@ -26,33 +26,31 @@ app.add_middleware(
 DB_PATH = '/data/anima.db' if os.path.exists('/data') else 'anima.db'
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# --- НАСТРОЙКА ШРИФТА ДЛЯ КИРИЛЛИЦЫ ---
-FONT_PATH = '/data/DejaVuSans.ttf' if os.path.exists('/data') else 'DejaVuSans.ttf'
-FONT_NAME = 'Helvetica' # По умолчанию
+# --- НАСТРОЙКА ШРИФТОВ ---
+FONT_NAME_REGULAR = 'Helvetica'
+FONT_NAME_BOLD = 'Helvetica-Bold'
+FONT_NAME_ITALIC = 'Helvetica-Oblique'
 
-def ensure_font():
-    """Скачивает шрифт DejaVuSans, если его нет, и регистрирует его."""
-    global FONT_NAME
-    if not os.path.exists(FONT_PATH):
-        try:
-            import urllib.request
-            print("⏳ Скачиваем шрифт DejaVuSans.ttf...")
-            url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
-            urllib.request.urlretrieve(url, FONT_PATH)
-            print("✅ Шрифт скачан.")
-        except Exception as e:
-            print(f"❌ Не удалось скачать шрифт: {e}")
-            return
-
+def register_fonts():
+    global FONT_NAME_REGULAR, FONT_NAME_BOLD, FONT_NAME_ITALIC
     try:
-        pdfmetrics.registerFont(TTFont('DejaVu', FONT_PATH))
-        FONT_NAME = 'DejaVu'
-        print("✅ Шрифт DejaVu зарегистрирован.")
+        pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))
+        FONT_NAME_REGULAR = 'DejaVu'
+        
+        pdfmetrics.registerFont(TTFont('DejaVu-Bold', 'DejaVuSans-Bold.ttf'))
+        FONT_NAME_BOLD = 'DejaVu-Bold'
+        
+        pdfmetrics.registerFont(TTFont('DejaVu-Oblique', 'DejaVuSans-Oblique.ttf'))
+        FONT_NAME_ITALIC = 'DejaVu-Oblique'
+        
+        # Жирный курсив регистрируем на случай будущих нужд
+        pdfmetrics.registerFont(TTFont('DejaVu-BoldOblique', 'DejaVuSans-BoldOblique.ttf'))
+        
+        print("✅ Шрифты DejaVu зарегистрированы.")
     except Exception as e:
-        print(f"❌ Ошибка регистрации шрифта: {e}")
+        print(f"❌ Ошибка регистрации шрифтов: {e}. Будут использоваться стандартные.")
 
-# Вызываем при старте
-ensure_font()
+register_fonts()
 
 def get_period_name(date_str):
     if not date_str: return "Без периода"
@@ -201,9 +199,6 @@ async def get_audio(file_id: str):
 
 @app.get("/api/report")
 async def generate_report(start_date: str, end_date: str):
-    """Генерирует PDF-отчёт за период start_date - end_date (формат YYYY-MM-DD)"""
-    ensure_font() # Проверяем шрифт перед генерацией
-    
     try:
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
         query = """
@@ -228,7 +223,7 @@ async def generate_report(start_date: str, end_date: str):
         width, height = A4
         y = height - 20 * mm
 
-        p.setFont(FONT_NAME, 16)
+        p.setFont(FONT_NAME_BOLD, 16)
         p.drawString(20 * mm, y, f"Отчёт за период: {start_date} — {end_date}")
         y -= 15 * mm
 
@@ -274,12 +269,13 @@ async def generate_report(start_date: str, end_date: str):
         return Response(content=f"Ошибка генерации PDF: {e}", status_code=500)
 
 def draw_animator_block(p, y, width, animator_name, titles):
-    """Рисует блок одного аниматора с таблицей"""
-    p.setFont(FONT_NAME, 12)
+    # Имя аниматора (жирным)
+    p.setFont(FONT_NAME_BOLD, 12)
     p.drawString(20 * mm, y, f"Аниматор: {animator_name}")
     y -= 7 * mm
 
-    p.setFont(FONT_NAME, 10)
+    # Заголовки таблицы (жирным)
+    p.setFont(FONT_NAME_BOLD, 10)
     p.drawString(20 * mm, y, "№")
     p.drawString(30 * mm, y, "Название ролика")
     p.drawString(110 * mm, y, "Взял в работу")
@@ -290,18 +286,26 @@ def draw_animator_block(p, y, width, animator_name, titles):
     y -= 5 * mm
 
     for idx, item in enumerate(titles, 1):
-        p.setFont(FONT_NAME, 9)
+        # Строки таблицы: обычный шрифт для названия, курсив для дат
+        p.setFont(FONT_NAME_REGULAR, 9)
         p.drawString(20 * mm, y, str(idx))
         title_text = item['title'][:40] + '...' if len(item['title']) > 40 else item['title']
         p.drawString(30 * mm, y, title_text)
+        
+        p.setFont(FONT_NAME_ITALIC, 9)
         p.drawString(110 * mm, y, item['selected_at'])
         p.drawString(150 * mm, y, item['completed_at'])
+        
         y -= 5 * mm
         
         if y < 20 * mm:
             p.showPage()
-            p.setFont(FONT_NAME, 10)
-            y = A4[1] - 20 * mm
+            p.setFont(FONT_NAME_BOLD, 10)
+            p.drawString(20 * mm, y, "№")
+            p.drawString(30 * mm, y, "Название ролика")
+            p.drawString(110 * mm, y, "Взял в работу")
+            p.drawString(150 * mm, y, "Сдал")
+            y -= 5 * mm
 
     y -= 10 * mm
     return y
