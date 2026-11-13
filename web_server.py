@@ -48,6 +48,7 @@ register_fonts()
 
 def get_period_name(date_str):
     if not date_str: return "Без периода"
+    date_str = date_str.split('.')[0] # Убираем микросекунды
     dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
     day, month, year = dt.day, dt.month, dt.year
     if 3 <= day <= 15:
@@ -63,6 +64,7 @@ def get_period_name(date_str):
 
 def get_group_name(date_str):
     if not date_str: return "Без даты"
+    date_str = date_str.split('.')[0] # Убираем микросекунды
     dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
     if 3 <= dt.day <= 15:
         return f"02.{dt.month:02d} — 15.{dt.month:02d}"
@@ -115,7 +117,7 @@ async def cancel_scenario(scenario_id: int, user_id: int):
     if not res or res[0] != 'taken' or res[1] != user_id:
         conn.close(); return {"error": "Вы не можете отменить этот сценарий"}
     if res[2]:
-        selected_at = datetime.strptime(res[2], "%Y-%m-%d %H:%M:%S.%f")
+        selected_at = datetime.strptime(res[2].split('.')[0], "%Y-%m-%d %H:%M:%S")
         if datetime.now() - selected_at > timedelta(hours=12):
             conn.close(); return {"error": "Отменить можно только в первые 12 часов"}
     cursor.execute("UPDATE scenarios SET status = 'free', animator_id = NULL, selected_at = NULL WHERE id = ?", (scenario_id,))
