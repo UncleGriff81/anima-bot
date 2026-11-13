@@ -12,8 +12,9 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9102167219:AAEMqwGo-ecnnR4SJeCVcSgcrRObYpf4FQs")
-# Список ID админов (сюда можно добавить свой ID через запятую)
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+# Список ID админов через запятую (например, "123456789,987654321")
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -54,21 +55,35 @@ async def send_scenario_details(target_message: types.Message, scenario_id: int,
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(f"Привет, {message.from_user.first_name}!\n\n/add_scenario — Добавить\n/list_scenarios — Свободные\n/my_scenarios — Мои ролики")
+    # Сохраняем пользователя в базу, если его там нет
+    try:
+        conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+                       (message.from_user.id, message.from_user.username, message.from_user.first_name))
+        conn.commit()
+        conn.close()
+        print(f"✅ Пользователь {message.from_user.id} (@{message.from_user.username}) сохранен/обновлен.")
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении пользователя: {e}")
 
-# --- НОВАЯ КОМАНДА ДЛЯ АДМИНА ---
+    await message.answer(
+        f"Привет, {message.from_user.first_name}!\n\n"
+        "/add_scenario — Добавить сценарий\n"
+        "/list_scenarios — Свободные сценарии\n"
+        "/my_scenarios — Мои ролики\n"
+        "/add_user — Добавить участника (только для админа)"
+    )
+
 @dp.message(Command("add_user"))
 async def add_user(message: types.Message):
-    # Проверка, что пишет админ
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("У вас нет прав для этой команды.")
         return
     
-    # Формат: /add_user @username роль
     try:
         parts = message.text.split()
         if len(parts) < 3:
-            await message.answer("Формат: /add_user @username роль\nПример: /add_user @ivan сценарист")
+            await message.answer("Формат: /add_user @username роль\nПример: /add_user @ivan animator")
             return
             
         target_username = parts[1].replace("@", "")
@@ -78,7 +93,6 @@ async def add_user(message: types.Message):
             await message.answer("Роль должна быть: admin, scenarist или animator")
             return
 
-        # Пытаемся получить ID пользователя по нику (если он писал боту)
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
         cursor.execute("SELECT user_id, first_name FROM users WHERE username = ?", (target_username,))
         existing = cursor.fetchone()
@@ -97,20 +111,118 @@ async def add_user(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
-# Обработчик регистрации (когда пользователь пишет /start)
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    # Сохраняем пользователя в базу, если его там нет
-    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
-                   (message.from_user.id, message.from_user.username, message.from_user.first_name))
-    conn.commit(); conn.close()
-    
-    await message.answer(f"Привет, {message.from_user.first_name}!\n\n/add_scenario — Добавить\n/list_scenarios — Свободные\n/my_scenarios — Мои ролики")
+@dp.message(Command("add_scenario"))
+async def add_scenario_start(message: types.Message, state: FSMContext):
+    await message.answer("Шаг 1/5. Введите название ролика:", reply_markup=cancel_kb); await state.set_state(AddScenario.title)
 
-# ... остальной код бота (add_scenario, process_..., list_scenarios, select_, cancel_, complete_, reminders) ...
-# Он остается без изменений, я его пропущу для краткости, чтобы ты вставил только новые части.
-# Но ты можешь просто взять старый код и вставить в него эти новые обработчики.
+@dp.message(AddScenario.title)
+async def process_title(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    await state.update_data(title=message.text); await message.answer("Шаг 2/5. Введите описание:"); await state.set_state(AddScenario.description)
+
+@dp.message(AddScenario.description)
+async def process_description(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    await state.update_data(description=message.text); await message.answer("Шаг 3/5. Сколько сцен? (число)"); await state.set_state(AddScenario.scenes_count)
+
+@dp.message(AddScenario.scenes_count)
+async def process_scenes_count(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    if not message.text.isdigit(): await message.answer("Введите число."); return
+    await state.update_data(scenes_count=int(message.text), current_scene=1, scenes=[])
+    await message.answer(f"Шаг 4/5. Описание Сцены №1:"); await state.set_state(AddScenario.scene_text)
+
+@dp.message(AddScenario.scene_text)
+async def process_scene_text(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    await state.update_data(current_scene_text=message.text); await message.answer("Фото (или 'Пропустить ⏭'):", reply_markup=skip_kb); await state.set_state(AddScenario.scene_photo)
+
+@dp.message(AddScenario.scene_photo)
+async def process_scene_photo(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    data = await state.get_data(); scenes = data['scenes']; photo_id = None
+    if message.photo: photo_id = message.photo[-1].file_id
+    elif message.text != "Пропустить ⏭": await message.answer("Прикрепите фото или нажмите Пропустить."); return
+    scenes.append({"text": data['current_scene_text'], "photo": photo_id})
+    current = data['current_scene']; total = data['scenes_count']
+    if current < total:
+        await state.update_data(scenes=scenes, current_scene=current + 1)
+        await message.answer(f"Описание Сцены №{current + 1}:", reply_markup=cancel_kb); await state.set_state(AddScenario.scene_text)
+    else:
+        await state.update_data(scenes=scenes); await message.answer("Шаг 5/5. Аудио (или 'Пропустить ⏭'):", reply_markup=skip_kb); await state.set_state(AddScenario.audio)
+
+@dp.message(AddScenario.audio)
+async def process_audio(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    audio_id = None
+    if message.audio: audio_id = message.audio.file_id
+    elif message.text != "Пропустить ⏭": await message.answer("Прикрепите аудио."); return
+    data = await state.get_data(); conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("INSERT INTO scenarios (title, description, scenes_count, scenes_data, audio_file_id) VALUES (?, ?, ?, ?, ?)",
+        (data['title'], data['description'], data['scenes_count'], json.dumps(data['scenes'], ensure_ascii=False), audio_id))
+    conn.commit(); conn.close()
+    await message.answer(f"✅ Сценарий «{data['title']}» добавлен!", reply_markup=ReplyKeyboardRemove()); await state.clear()
+
+async def cancel_add(message: types.Message, state: FSMContext):
+    await state.clear(); await message.answer("Отменено.", reply_markup=ReplyKeyboardRemove())
+
+@dp.message(Command("list_scenarios"))
+async def list_scenarios(message: types.Message):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title FROM scenarios WHERE status = 'free'")
+    scenarios = cursor.fetchall(); conn.close()
+    if not scenarios: await message.answer("Нет свободных сценариев."); return
+    await message.answer("🎬 <b>Доступные сценарии:</b>", parse_mode="HTML")
+    for scenario in scenarios:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Посмотреть «{scenario[1]}»", callback_data=f"view_{scenario[0]}")]])
+        await message.answer(f"📌 {scenario[1]}", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("view_"))
+async def process_view(callback: types.CallbackQuery):
+    await callback.answer(); await send_scenario_details(callback.message, int(callback.data.split("_")[1]))
+
+@dp.callback_query(F.data.startswith("select_"))
+async def process_select(callback: types.CallbackQuery):
+    scenario_id = int(callback.data.split("_")[1]); user_id = callback.from_user.id; username = callback.from_user.username or callback.from_user.first_name
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT status, title FROM scenarios WHERE id = ?", (scenario_id,)); result = cursor.fetchone()
+    if result and result[0] == 'free':
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        cursor.execute("UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?", (user_id, now_str, scenario_id))
+        conn.commit()
+        text = f"📌 <b>{result[1]}</b>\n\n🔒 Выбрал: @{username}\nСтатус: В работе"
+        await callback.message.edit_text(text, reply_markup=get_control_buttons(scenario_id, now_str), parse_mode="HTML")
+        await callback.answer(f"Вы взяли сценарий!")
+    else: await callback.answer("Уже занят.", show_alert=True)
+    conn.close()
+
+@dp.message(Command("my_scenarios"))
+async def my_scenarios(message: types.Message):
+    user_id = message.from_user.id; conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title, selected_at FROM scenarios WHERE status = 'taken' AND animator_id = ?", (user_id,))
+    scenarios = cursor.fetchall(); conn.close()
+    if not scenarios: await message.answer("У вас нет роликов."); return
+    for s in scenarios: await message.answer(f"📌 <b>{s[1]}</b>", reply_markup=get_control_buttons(s[0], s[2]), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("complete_"))
+async def process_complete(callback: types.CallbackQuery):
+    scenario_id = int(callback.data.split("_")[1]); conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET status = 'completed', completed_at = ? WHERE id = ?", (now_str, scenario_id))
+    conn.commit(); cursor.execute("SELECT title FROM scenarios WHERE id = ?", (scenario_id,)); title = cursor.fetchone()[0]; conn.close()
+    await callback.message.edit_text(f"📌 <b>{title}</b>\n\n✅ <b>Завершено!</b>", parse_mode="HTML"); await callback.answer("Готово!")
+
+@dp.callback_query(F.data.startswith("cancel_"))
+async def process_cancel(callback: types.CallbackQuery):
+    scenario_id = int(callback.data.split("_")[1]); conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT selected_at FROM scenarios WHERE id = ?", (scenario_id,)); res = cursor.fetchone()
+    if res and res[0]:
+        if datetime.now() - datetime.strptime(res[0], "%Y-%m-%d %H:%M:%S.%f") > timedelta(hours=12):
+            await callback.answer("Отмена доступна только 12 часов!", show_alert=True); conn.close(); return
+    cursor.execute("UPDATE scenarios SET status = 'free', animator_id = NULL, selected_at = NULL WHERE id = ?", (scenario_id,))
+    conn.commit(); cursor.execute("SELECT title FROM scenarios WHERE id = ?", (scenario_id,)); title = cursor.fetchone()[0]; conn.close()
+    await callback.message.edit_text(f"📌 <b>{title}</b>\n\nСтатус: Свободен", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Выбрать", callback_data=f"select_{scenario_id}")]]), parse_mode="HTML")
+    await callback.answer("Отменено.")
 
 async def check_reminders():
     while True:

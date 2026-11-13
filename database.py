@@ -6,6 +6,7 @@ def init_db():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Создаем таблицу users с нужными колонками
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -15,6 +16,7 @@ def init_db():
         )
     ''')
 
+    # Создаем таблицу scenarios
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS scenarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,18 +34,16 @@ def init_db():
         )
     ''')
 
-    # Проверяем и добавляем недостающие колонки в таблицу users
+    # Проверяем, есть ли колонка first_name в users (если таблица старая)
     cursor.execute("PRAGMA table_info(users)")
     user_columns = [col[1] for col in cursor.fetchall()]
-    
     if 'first_name' not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
-        print("Добавлена колонка first_name в таблицу users.")
+        print("✅ Добавлена колонка first_name в таблицу users.")
 
-    # Проверяем и добавляем недостающие колонки в таблицу scenarios
+    # Проверяем, есть ли новые колонки в scenarios
     cursor.execute("PRAGMA table_info(scenarios)")
     scenario_columns = [col[1] for col in cursor.fetchall()]
-    
     if 'uploaded_at' not in scenario_columns:
         cursor.execute("ALTER TABLE scenarios ADD COLUMN uploaded_at TIMESTAMP")
     if 'work_link' not in scenario_columns:
@@ -51,7 +51,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"База данных инициализирована. Путь: {db_path}")
+    print(f"✅ База данных инициализирована. Путь: {db_path}")
 
 if __name__ == "__main__":
     init_db()
