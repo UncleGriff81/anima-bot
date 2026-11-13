@@ -15,6 +15,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "9102167219:AAEMqwGo-ecnnR4SJeCVcSgcrRObYpf4F
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
+# --- ОТЛАДКА ---
+print(f"🔍 Отладка: ADMIN_IDS_STR = '{ADMIN_IDS_STR}', ADMIN_IDS = {ADMIN_IDS}")
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -36,7 +39,7 @@ def get_user_role(user_id: int) -> str:
     conn.close()
     return res[0] if res else 'animator'
 
-# --- ФУНКЦИИ ГЕНЕРАЦИИ КЛАВИАТУР (В ЗАВИСИМОСТИ ОТ РОЛИ) ---
+# --- ФУНКЦИИ ГЕНЕРАЦИИ КЛАВИАТУР ---
 def get_main_kb(role: str):
     if role == 'admin':
         return ReplyKeyboardMarkup(
@@ -54,7 +57,7 @@ def get_main_kb(role: str):
             ],
             resize_keyboard=True
         )
-    else: # animator
+    else:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📚 Сценарии")],
@@ -64,7 +67,7 @@ def get_main_kb(role: str):
         )
 
 def get_scenario_kb(role: str):
-    if role == 'admin' or role == 'scenarist':
+    if role in ['admin', 'scenarist']:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="➕ Создать сценарий")],
@@ -74,7 +77,7 @@ def get_scenario_kb(role: str):
             ],
             resize_keyboard=True
         )
-    else: # animator
+    else:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="⬅️ Назад")]
@@ -133,6 +136,7 @@ async def cmd_start(message: types.Message):
         print(f"❌ Ошибка сохранения пользователя: {e}")
 
     role = get_user_role(message.from_user.id)
+    print(f"🔍 Пользователь {message.from_user.id} зашел. Роль в базе: {role}")
     await message.answer(
         f"Привет, {message.from_user.first_name}!\nВыбери раздел:",
         reply_markup=get_main_kb(role)
@@ -168,7 +172,7 @@ async def my_scenarios_menu(message: types.Message):
     for s in scenarios: 
         await message.answer(f"📌 <b>{s[1]}</b>", reply_markup=get_control_buttons(s[0], s[2]), parse_mode="HTML")
 
-# --- СОЗДАНИЕ СЦЕНАРИЯ (ТОЛЬКО ДЛЯ АДМИНОВ И СЦЕНАРИСТОВ) ---
+# --- СОЗДАНИЕ СЦЕНАРИЯ ---
 @dp.message(F.text == "➕ Создать сценарий")
 async def add_scenario_start(message: types.Message, state: FSMContext):
     role = get_user_role(message.from_user.id)
@@ -248,7 +252,7 @@ async def delete_scenario_stub(message: types.Message):
         return
     await message.answer("Функция удаления сценариев в разработке.")
 
-# --- ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (ТОЛЬКО АДМИН) ---
+# --- ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ---
 @dp.message(F.text == "➕ Добавить пользователя")
 async def add_user_start(message: types.Message, state: FSMContext):
     role = get_user_role(message.from_user.id)
