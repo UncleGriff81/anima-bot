@@ -6,10 +6,12 @@ def init_db():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Таблица пользователей (участников)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
+            first_name TEXT,
             role TEXT DEFAULT 'animator'
         )
     ''')
@@ -31,10 +33,9 @@ def init_db():
         )
     ''')
 
-    # Проверяем, есть ли уже новые поля (если база старая, мы их добавим)
+    # Проверяем, есть ли новые поля (на случай обновления)
     cursor.execute("PRAGMA table_info(scenarios)")
     columns = [col[1] for col in cursor.fetchall()]
-    
     if 'uploaded_at' not in columns:
         cursor.execute("ALTER TABLE scenarios ADD COLUMN uploaded_at TIMESTAMP")
     if 'work_link' not in columns:
