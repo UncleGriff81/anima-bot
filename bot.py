@@ -15,9 +15,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "9102167219:AAEMqwGo-ecnnR4SJeCVcSgcrRObYpf4F
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
-# --- ОТЛАДКА ---
-print(f"🔍 Отладка: ADMIN_IDS_STR = '{ADMIN_IDS_STR}', ADMIN_IDS = {ADMIN_IDS}")
-
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -30,6 +27,10 @@ class AddScenario(StatesGroup):
 class AddUser(StatesGroup):
     waiting_for_username = State()
     waiting_for_role = State()
+
+class EditScenario(StatesGroup):
+    waiting_for_new_title = State()
+    waiting_for_new_description = State()
 
 # --- ФУНКЦИЯ ПОЛУЧЕНИЯ РОЛИ ---
 def get_user_role(user_id: int) -> str:
@@ -45,14 +46,6 @@ def get_main_kb(role: str):
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="📚 Сценарии"), KeyboardButton(text="👥 Пользователи")],
-                [KeyboardButton(text="🎞 Мои ролики")]
-            ],
-            resize_keyboard=True
-        )
-    elif role == 'scenarist':
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="📚 Сценарии")],
                 [KeyboardButton(text="🎞 Мои ролики")]
             ],
             resize_keyboard=True
@@ -136,11 +129,7 @@ async def cmd_start(message: types.Message):
         print(f"❌ Ошибка сохранения пользователя: {e}")
 
     role = get_user_role(message.from_user.id)
-    print(f"🔍 Пользователь {message.from_user.id} зашел. Роль в базе: {role}")
-    await message.answer(
-        f"Привет, {message.from_user.first_name}!\nВыбери раздел:",
-        reply_markup=get_main_kb(role)
-    )
+    await message.answer(f"Привет, {message.from_user.first_name}!\nВыбери раздел:", reply_markup=get_main_kb(role))
 
 @dp.message(F.text == "📚 Сценарии")
 async def open_scenarios_menu(message: types.Message):
@@ -151,7 +140,7 @@ async def open_scenarios_menu(message: types.Message):
 async def open_users_menu(message: types.Message):
     role = get_user_role(message.from_user.id)
     if role != 'admin':
-        await message.answer("У вас нет прав для управления пользователями.")
+        await message.answer("У вас нет прав.")
         return
     await message.answer("Раздел «Пользователи»:", reply_markup=get_users_kb())
 
@@ -177,7 +166,7 @@ async def my_scenarios_menu(message: types.Message):
 async def add_scenario_start(message: types.Message, state: FSMContext):
     role = get_user_role(message.from_user.id)
     if role not in ['admin', 'scenarist']:
-        await message.answer("У вас нет прав для создания сценариев.")
+        await message.answer("У вас нет прав.")
         return
     await message.answer("Шаг 1/5. Введите название ролика:", reply_markup=cancel_kb); await state.set_state(AddScenario.title)
 
@@ -235,22 +224,88 @@ async def cancel_add(message: types.Message, state: FSMContext):
     role = get_user_role(message.from_user.id)
     await message.answer("Отменено.", reply_markup=get_main_kb(role))
 
-# --- РЕДАКТИРОВАНИЕ И УДАЛЕНИЕ (ЗАГЛУШКИ) ---
+# --- РЕДАКТИРОВАНИЕ СЦЕНАРИЯ ---
 @dp.message(F.text == "✏️ Редактировать сценарий")
-async def edit_scenario_stub(message: types.Message):
+async def edit_scenario_menu(message: types.Message):
     role = get_user_role(message.from_user.id)
     if role not in ['admin', 'scenarist']:
         await message.answer("У вас нет прав.")
         return
-    await message.answer("Функция редактирования сценариев в разработке.")
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title FROM scenarios ORDER BY id DESC")
+    scenarios = cursor.fetchall(); conn.close()
+    if not scenarios:
+        await message.answer("Нет сценариев для редактирования.")
+        return
+    await message.answer("Выберите сценарий для редактирования:")
+    for s in scenarios:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"✏️ {s[1]}", callback_data=f"edit_{s[0]}")]])
+        await message.answer(f"📌 {s[1]}", reply_markup=kb)
 
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_scenario_start(callback: types.CallbackQuery, state: FSMContext):
+    scenario_id = int(callback.data.split("_")[1])
+    await callback.answer()
+    await state.update_data(edit_id=scenario_id)
+    await callback.message.answer("Введите новое название (или отправьте 'Пропустить', чтобы оставить старым):", reply_markup=cancel_kb)
+    await state.set_state(EditScenario.waiting_for_new_title)
+
+@dp.message(EditScenario.waiting_for_new_title)
+async def process_new_title(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    new_title = message.text if message.text != "Пропустить" else None
+    await state.update_data(new_title=new_title)
+    await message.answer("Введите новое описание (или 'Пропустить'):")
+    await state.set_state(EditScenario.waiting_for_new_description)
+
+@dp.message(EditScenario.waiting_for_new_description)
+async def process_new_description(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    new_desc = message.text if message.text != "Пропустить" else None
+    data = await state.get_data()
+    scenario_id = data['edit_id']
+    new_title = data.get('new_title')
+    
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    if new_title:
+        cursor.execute("UPDATE scenarios SET title = ? WHERE id = ?", (new_title, scenario_id))
+    if new_desc:
+        cursor.execute("UPDATE scenarios SET description = ? WHERE id = ?", (new_desc, scenario_id))
+    conn.commit(); conn.close()
+    
+    role = get_user_role(message.from_user.id)
+    await message.answer("✅ Сценарий обновлён!", reply_markup=get_main_kb(role))
+    await state.clear()
+
+# --- УДАЛЕНИЕ СЦЕНАРИЯ ---
 @dp.message(F.text == "🗑 Удалить сценарий")
-async def delete_scenario_stub(message: types.Message):
+async def delete_scenario_menu(message: types.Message):
     role = get_user_role(message.from_user.id)
     if role not in ['admin', 'scenarist']:
         await message.answer("У вас нет прав.")
         return
-    await message.answer("Функция удаления сценариев в разработке.")
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title FROM scenarios ORDER BY id DESC")
+    scenarios = cursor.fetchall(); conn.close()
+    if not scenarios:
+        await message.answer("Нет сценариев для удаления.")
+        return
+    await message.answer("Выберите сценарий для удаления:")
+    for s in scenarios:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🗑 {s[1]}", callback_data=f"delete_{s[0]}")]])
+        await message.answer(f"📌 {s[1]}", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_scenario(callback: types.CallbackQuery):
+    scenario_id = int(callback.data.split("_")[1])
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT title FROM scenarios WHERE id = ?", (scenario_id,))
+    title = cursor.fetchone()[0]
+    cursor.execute("DELETE FROM scenarios WHERE id = ?", (scenario_id,))
+    conn.commit(); conn.close()
+    
+    await callback.message.edit_text(f"🗑 Сценарий «{title}» удалён.")
+    await callback.answer("Удалено.")
 
 # --- ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ ---
 @dp.message(F.text == "➕ Добавить пользователя")
@@ -286,10 +341,8 @@ async def process_add_user_role(message: types.Message, state: FSMContext):
     existing = cursor.fetchone()
     
     if not existing:
-        await message.answer(f"Пользователь @{target_username} не найден. Попросите его написать боту /start.", reply_markup=get_main_kb('admin'))
-        conn.close()
-        await state.clear()
-        return
+        await message.answer(f"Пользователь @{target_username} не найден. Попросите его написать /start.", reply_markup=get_main_kb('admin'))
+        conn.close(); await state.clear(); return
         
     user_id, first_name = existing
     cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
@@ -298,12 +351,11 @@ async def process_add_user_role(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Пользователь @{target_username} ({first_name}) назначен на роль: {role}", reply_markup=get_main_kb('admin'))
     await state.clear()
 
-# --- ТЕКСТОВАЯ КОМАНДА ДЛЯ СОВМЕСТИМОСТИ ---
+# --- КОМАНДЫ ДЛЯ СОВМЕСТИМОСТИ ---
 @dp.message(Command("add_user"))
 async def add_user_command(message: types.Message):
     await add_user_start(message, None)
 
-# --- СПИСОК СЦЕНАРИЕВ (ДЛЯ КОМАНДЫ) ---
 @dp.message(Command("list_scenarios"))
 async def list_scenarios(message: types.Message):
     conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
@@ -337,19 +389,6 @@ async def process_select(callback: types.CallbackQuery):
 @dp.message(Command("my_scenarios"))
 async def my_scenarios(message: types.Message):
     await my_scenarios_menu(message)
-
-@dp.message(Command("force_admin"))
-async def force_admin(message: types.Message):
-    """Временная команда для назначения себя админом"""
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("Вы не в списке админов.")
-        return
-        
-    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-    cursor.execute("UPDATE users SET role = 'admin' WHERE user_id = ?", (message.from_user.id,))
-    conn.commit(); conn.close()
-    
-    await message.answer("✅ Ваша роль обновлена на 'admin'. Нажмите /start, чтобы увидеть меню.")
 
 @dp.callback_query(F.data.startswith("complete_"))
 async def process_complete(callback: types.CallbackQuery):
