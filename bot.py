@@ -12,7 +12,6 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "9102167219:AAEMqwGo-ecnnR4SJeCVcSgcrRObYpf4FQs")
-# Список ID админов через запятую (например, "123456789,987654321")
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
@@ -21,12 +20,81 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 DB_PATH = '/data/anima.db' if os.path.exists('/data') else 'anima.db'
 
+# --- СОСТОЯНИЯ ---
 class AddScenario(StatesGroup):
     title = State(); description = State(); scenes_count = State(); scene_text = State(); scene_photo = State(); audio = State()
+
+class AddUser(StatesGroup):
+    waiting_for_username = State()
+    waiting_for_role = State()
+
+# --- ФУНКЦИЯ ПОЛУЧЕНИЯ РОЛИ ---
+def get_user_role(user_id: int) -> str:
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else 'animator'
+
+# --- ФУНКЦИИ ГЕНЕРАЦИИ КЛАВИАТУР (В ЗАВИСИМОСТИ ОТ РОЛИ) ---
+def get_main_kb(role: str):
+    if role == 'admin':
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📚 Сценарии"), KeyboardButton(text="👥 Пользователи")],
+                [KeyboardButton(text="🎞 Мои ролики")]
+            ],
+            resize_keyboard=True
+        )
+    elif role == 'scenarist':
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📚 Сценарии")],
+                [KeyboardButton(text="🎞 Мои ролики")]
+            ],
+            resize_keyboard=True
+        )
+    else: # animator
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📚 Сценарии")],
+                [KeyboardButton(text="🎞 Мои ролики")]
+            ],
+            resize_keyboard=True
+        )
+
+def get_scenario_kb(role: str):
+    if role == 'admin' or role == 'scenarist':
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="➕ Создать сценарий")],
+                [KeyboardButton(text="✏️ Редактировать сценарий")],
+                [KeyboardButton(text="🗑 Удалить сценарий")],
+                [KeyboardButton(text="⬅️ Назад")]
+            ],
+            resize_keyboard=True
+        )
+    else: # animator
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="⬅️ Назад")]
+            ],
+            resize_keyboard=True
+        )
+
+def get_users_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить пользователя")],
+            [KeyboardButton(text="⬅️ Назад")]
+        ],
+        resize_keyboard=True
+    )
 
 cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
 skip_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Пропустить ⏭")], [KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_control_buttons(scenario_id, selected_at_str):
     kb = [[InlineKeyboardButton(text="✅ Завершить", callback_data=f"complete_{scenario_id}")]]
     if selected_at_str:
@@ -53,66 +121,60 @@ async def send_scenario_details(target_message: types.Message, scenario_id: int,
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Выбрать этот сценарий", callback_data=f"select_{scenario_id}")]])
         await target_message.answer("Готовы взять этот сценарий в работу?", reply_markup=kb)
 
+# --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Сохраняем пользователя в базу, если его там нет
     try:
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
                        (message.from_user.id, message.from_user.username, message.from_user.first_name))
-        conn.commit()
-        conn.close()
-        print(f"✅ Пользователь {message.from_user.id} (@{message.from_user.username}) сохранен/обновлен.")
+        conn.commit(); conn.close()
     except Exception as e:
-        print(f"❌ Ошибка при сохранении пользователя: {e}")
+        print(f"❌ Ошибка сохранения пользователя: {e}")
 
+    role = get_user_role(message.from_user.id)
     await message.answer(
-        f"Привет, {message.from_user.first_name}!\n\n"
-        "/add_scenario — Добавить сценарий\n"
-        "/list_scenarios — Свободные сценарии\n"
-        "/my_scenarios — Мои ролики\n"
-        "/add_user — Добавить участника (только для админа)"
+        f"Привет, {message.from_user.first_name}!\nВыбери раздел:",
+        reply_markup=get_main_kb(role)
     )
 
-@dp.message(Command("add_user"))
-async def add_user(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("У вас нет прав для этой команды.")
+@dp.message(F.text == "📚 Сценарии")
+async def open_scenarios_menu(message: types.Message):
+    role = get_user_role(message.from_user.id)
+    await message.answer("Раздел «Сценарии»:", reply_markup=get_scenario_kb(role))
+
+@dp.message(F.text == "👥 Пользователи")
+async def open_users_menu(message: types.Message):
+    role = get_user_role(message.from_user.id)
+    if role != 'admin':
+        await message.answer("У вас нет прав для управления пользователями.")
         return
-    
-    try:
-        parts = message.text.split()
-        if len(parts) < 3:
-            await message.answer("Формат: /add_user @username роль\nПример: /add_user @ivan animator")
-            return
-            
-        target_username = parts[1].replace("@", "")
-        role = parts[2].lower()
-        
-        if role not in ['admin', 'scenarist', 'animator']:
-            await message.answer("Роль должна быть: admin, scenarist или animator")
-            return
+    await message.answer("Раздел «Пользователи»:", reply_markup=get_users_kb())
 
-        conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-        cursor.execute("SELECT user_id, first_name FROM users WHERE username = ?", (target_username,))
-        existing = cursor.fetchone()
-        
-        if not existing:
-            await message.answer(f"Пользователь @{target_username} не найден. Попросите его написать боту /start.")
-            conn.close()
-            return
-            
-        user_id, first_name = existing
-        cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
-        conn.commit()
-        conn.close()
-        
-        await message.answer(f"✅ Пользователь @{target_username} ({first_name}) назначен на роль: {role}")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+@dp.message(F.text == "⬅️ Назад")
+async def go_back(message: types.Message, state: FSMContext):
+    await state.clear()
+    role = get_user_role(message.from_user.id)
+    await message.answer("Главное меню:", reply_markup=get_main_kb(role))
 
-@dp.message(Command("add_scenario"))
+@dp.message(F.text == "🎞 Мои ролики")
+async def my_scenarios_menu(message: types.Message):
+    user_id = message.from_user.id; conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title, selected_at FROM scenarios WHERE status = 'taken' AND animator_id = ?", (user_id,))
+    scenarios = cursor.fetchall(); conn.close()
+    if not scenarios: 
+        await message.answer("У вас нет активных роликов.")
+        return
+    for s in scenarios: 
+        await message.answer(f"📌 <b>{s[1]}</b>", reply_markup=get_control_buttons(s[0], s[2]), parse_mode="HTML")
+
+# --- СОЗДАНИЕ СЦЕНАРИЯ (ТОЛЬКО ДЛЯ АДМИНОВ И СЦЕНАРИСТОВ) ---
+@dp.message(F.text == "➕ Создать сценарий")
 async def add_scenario_start(message: types.Message, state: FSMContext):
+    role = get_user_role(message.from_user.id)
+    if role not in ['admin', 'scenarist']:
+        await message.answer("У вас нет прав для создания сценариев.")
+        return
     await message.answer("Шаг 1/5. Введите название ролика:", reply_markup=cancel_kb); await state.set_state(AddScenario.title)
 
 @dp.message(AddScenario.title)
@@ -161,11 +223,83 @@ async def process_audio(message: types.Message, state: FSMContext):
     cursor.execute("INSERT INTO scenarios (title, description, scenes_count, scenes_data, audio_file_id) VALUES (?, ?, ?, ?, ?)",
         (data['title'], data['description'], data['scenes_count'], json.dumps(data['scenes'], ensure_ascii=False), audio_id))
     conn.commit(); conn.close()
-    await message.answer(f"✅ Сценарий «{data['title']}» добавлен!", reply_markup=ReplyKeyboardRemove()); await state.clear()
+    role = get_user_role(message.from_user.id)
+    await message.answer(f"✅ Сценарий «{data['title']}» добавлен!", reply_markup=get_main_kb(role)); await state.clear()
 
 async def cancel_add(message: types.Message, state: FSMContext):
-    await state.clear(); await message.answer("Отменено.", reply_markup=ReplyKeyboardRemove())
+    await state.clear(); 
+    role = get_user_role(message.from_user.id)
+    await message.answer("Отменено.", reply_markup=get_main_kb(role))
 
+# --- РЕДАКТИРОВАНИЕ И УДАЛЕНИЕ (ЗАГЛУШКИ) ---
+@dp.message(F.text == "✏️ Редактировать сценарий")
+async def edit_scenario_stub(message: types.Message):
+    role = get_user_role(message.from_user.id)
+    if role not in ['admin', 'scenarist']:
+        await message.answer("У вас нет прав.")
+        return
+    await message.answer("Функция редактирования сценариев в разработке.")
+
+@dp.message(F.text == "🗑 Удалить сценарий")
+async def delete_scenario_stub(message: types.Message):
+    role = get_user_role(message.from_user.id)
+    if role not in ['admin', 'scenarist']:
+        await message.answer("У вас нет прав.")
+        return
+    await message.answer("Функция удаления сценариев в разработке.")
+
+# --- ДОБАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (ТОЛЬКО АДМИН) ---
+@dp.message(F.text == "➕ Добавить пользователя")
+async def add_user_start(message: types.Message, state: FSMContext):
+    role = get_user_role(message.from_user.id)
+    if role != 'admin':
+        await message.answer("У вас нет прав.")
+        return
+    await message.answer("Введите никнейм пользователя (например, @username):", reply_markup=cancel_kb)
+    await state.set_state(AddUser.waiting_for_username)
+
+@dp.message(AddUser.waiting_for_username)
+async def process_add_user_username(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    username = message.text.replace("@", "").strip()
+    await state.update_data(target_username=username)
+    await message.answer("Введите роль (admin, scenarist, animator):")
+    await state.set_state(AddUser.waiting_for_role)
+
+@dp.message(AddUser.waiting_for_role)
+async def process_add_user_role(message: types.Message, state: FSMContext):
+    if message.text == "❌ Отмена": return await cancel_add(message, state)
+    role = message.text.lower().strip()
+    if role not in ['admin', 'scenarist', 'animator']:
+        await message.answer("Роль должна быть: admin, scenarist или animator")
+        return
+    
+    data = await state.get_data()
+    target_username = data['target_username']
+    
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name FROM users WHERE username = ?", (target_username,))
+    existing = cursor.fetchone()
+    
+    if not existing:
+        await message.answer(f"Пользователь @{target_username} не найден. Попросите его написать боту /start.", reply_markup=get_main_kb('admin'))
+        conn.close()
+        await state.clear()
+        return
+        
+    user_id, first_name = existing
+    cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
+    conn.commit(); conn.close()
+    
+    await message.answer(f"✅ Пользователь @{target_username} ({first_name}) назначен на роль: {role}", reply_markup=get_main_kb('admin'))
+    await state.clear()
+
+# --- ТЕКСТОВАЯ КОМАНДА ДЛЯ СОВМЕСТИМОСТИ ---
+@dp.message(Command("add_user"))
+async def add_user_command(message: types.Message):
+    await add_user_start(message, None)
+
+# --- СПИСОК СЦЕНАРИЕВ (ДЛЯ КОМАНДЫ) ---
 @dp.message(Command("list_scenarios"))
 async def list_scenarios(message: types.Message):
     conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
@@ -198,11 +332,7 @@ async def process_select(callback: types.CallbackQuery):
 
 @dp.message(Command("my_scenarios"))
 async def my_scenarios(message: types.Message):
-    user_id = message.from_user.id; conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-    cursor.execute("SELECT id, title, selected_at FROM scenarios WHERE status = 'taken' AND animator_id = ?", (user_id,))
-    scenarios = cursor.fetchall(); conn.close()
-    if not scenarios: await message.answer("У вас нет роликов."); return
-    for s in scenarios: await message.answer(f"📌 <b>{s[1]}</b>", reply_markup=get_control_buttons(s[0], s[2]), parse_mode="HTML")
+    await my_scenarios_menu(message)
 
 @dp.callback_query(F.data.startswith("complete_"))
 async def process_complete(callback: types.CallbackQuery):
