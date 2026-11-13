@@ -62,7 +62,6 @@ def get_period_name(date_str):
         return f"с 16.{prev_month:02d} по 02.{month:02d}"
 
 def get_group_name(date_str):
-    """Определяет название подгруппы для отчёта"""
     if not date_str: return "Без даты"
     dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
     if 3 <= dt.day <= 15:
@@ -77,8 +76,135 @@ def get_group_name(date_str):
             if prev_month < 1: prev_month = 12
             return f"16.{prev_month:02d} — 03.{dt.month:02d}"
 
-# ... (остальные API методы: /api/scenarios, /api/users, select, cancel, complete, upload, my_scenarios, avatar, image, audio) ...
-# Они остаются без изменений, вставь их из предыдущего кода.
+@app.get("/api/scenarios")
+async def get_scenarios():
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT id, title, description, status, animator_id, scenes_data, audio_file_id, work_link FROM scenarios ORDER BY id DESC")
+    rows = cursor.fetchall(); conn.close()
+    result = []
+    for row in rows:
+        result.append({"id": row[0], "title": row[1], "description": row[2], "status": row[3], "animator_id": row[4], "scenes": json.loads(row[5]) if row[5] else [], "audio_id": row[6], "work_link": row[7]})
+    return {"scenarios": result}
+
+@app.get("/api/users")
+async def get_users():
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, first_name, role FROM users ORDER BY role")
+    rows = cursor.fetchall(); conn.close()
+    result = []
+    for row in rows:
+        result.append({"id": row[0], "username": row[1], "first_name": row[2], "role": row[3]})
+    return {"users": result}
+
+@app.post("/api/select_scenario/{scenario_id}")
+async def select_scenario(scenario_id: int, user_id: int):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT status FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    if not res or res[0] != 'free':
+        conn.close(); return {"error": "Сценарий уже занят или не найден"}
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET status = 'taken', animator_id = ?, selected_at = ? WHERE id = ?", (user_id, now_str, scenario_id))
+    conn.commit(); conn.close(); return {"success": True}
+
+@app.post("/api/cancel_scenario/{scenario_id}")
+async def cancel_scenario(scenario_id: int, user_id: int):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT status, animator_id, selected_at FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    if not res or res[0] != 'taken' or res[1] != user_id:
+        conn.close(); return {"error": "Вы не можете отменить этот сценарий"}
+    if res[2]:
+        selected_at = datetime.strptime(res[2], "%Y-%m-%d %H:%M:%S.%f")
+        if datetime.now() - selected_at > timedelta(hours=12):
+            conn.close(); return {"error": "Отменить можно только в первые 12 часов"}
+    cursor.execute("UPDATE scenarios SET status = 'free', animator_id = NULL, selected_at = NULL WHERE id = ?", (scenario_id,))
+    conn.commit(); conn.close(); return {"success": True}
+
+@app.post("/api/complete_scenario/{scenario_id}")
+async def complete_scenario(scenario_id: int, user_id: int):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT status, animator_id FROM scenarios WHERE id = ?", (scenario_id,))
+    res = cursor.fetchone()
+    if not res or res[0] != 'taken' or res[1] != user_id:
+        conn.close(); return {"error": "Вы не можете завершить этот сценарий"}
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET status = 'completed', completed_at = ? WHERE id = ?", (now_str, scenario_id))
+    conn.commit(); conn.close(); return {"success": True}
+
+@app.post("/api/upload_work/{scenario_id}")
+async def upload_work(scenario_id: int, work_link: str = ""):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    cursor.execute("UPDATE scenarios SET uploaded_at = ?, work_link = ? WHERE id = ?", (now_str, work_link, scenario_id))
+    conn.commit(); conn.close(); return {"success": True}
+
+@app.get("/api/my_scenarios/{user_id}")
+async def get_my_scenarios(user_id: int):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("SELECT title, selected_at, completed_at, status, uploaded_at FROM scenarios WHERE animator_id = ?", (user_id,))
+    rows = cursor.fetchall(); conn.close()
+    result = []
+    for row in rows:
+        title = row[0]
+        selected_at_str = row[1].split('.')[0] if row[1] else ""
+        completed_at_str = row[2].split('.')[0] if row[2] else "В работе"
+        status = row[3]
+        uploaded_at_str = row[4].split('.')[0] if row[4] else ""
+        period_date_str = uploaded_at_str if uploaded_at_str else selected_at_str
+        period_name = get_period_name(period_date_str)
+        result.append({"title": title, "selected_at": selected_at_str, "completed_at": completed_at_str, "uploaded_at": uploaded_at_str, "status": status, "period": period_name})
+    return {"scenarios": result}
+
+@app.get("/api/avatar/{user_id}")
+async def get_avatar(user_id: int):
+    if not BOT_TOKEN: return Response(content="Bot token not configured", status_code=500)
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos?user_id={user_id}&limit=1"
+        async with session.get(url) as response:
+            data = await response.json()
+        if not data.get("ok") or not data["result"]["photos"]:
+            return Response(content="No avatar", status_code=404)
+        file_id = data["result"]["photos"][0][-1]["file_id"]
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+        async with session.get(url) as response:
+            data = await response.json()
+        if not data.get("ok"): return Response(content="File not found", status_code=404)
+        file_path = data["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with session.get(file_url) as file_response:
+            if file_response.status != 200: return Response(content="Error", status_code=500)
+            return Response(content=await file_response.read(), media_type="image/jpeg")
+
+@app.get("/api/image/{file_id}")
+async def get_image(file_id: str):
+    if not BOT_TOKEN: return Response(content="Bot token not configured", status_code=500)
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+        async with session.get(url) as response:
+            data = await response.json()
+        if not data.get("ok"): return Response(content="File not found", status_code=404)
+        file_path = data["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with session.get(file_url) as file_response:
+            if file_response.status != 200: return Response(content="Error", status_code=500)
+            return Response(content=await file_response.read(), media_type="image/jpeg")
+
+@app.get("/api/audio/{file_id}")
+async def get_audio(file_id: str):
+    if not BOT_TOKEN: return Response(content="Bot token not configured", status_code=500)
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+        async with session.get(url) as response:
+            data = await response.json()
+        if not data.get("ok"): return Response(content="File not found", status_code=404)
+        file_path = data["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        async with session.get(file_url) as file_response:
+            if file_response.status != 200: return Response(content="Error", status_code=500)
+            file_bytes = await file_response.read()
+            headers = {"Content-Disposition": f'attachment; filename="{file_id}.mp3"'}
+            return Response(content=file_bytes, media_type="audio/mpeg", headers=headers)
 
 @app.get("/api/report")
 async def generate_report(start_date: str, end_date: str):
@@ -101,7 +227,6 @@ async def generate_report(start_date: str, end_date: str):
         if not rows:
             return Response(content="Нет данных за выбранный период", status_code=404)
 
-        # Группируем по аниматорам, внутри — по группам
         animators_data = {}
         for row in rows:
             title, selected_at, completed_at, uploaded_at, username, first_name = row
@@ -111,10 +236,7 @@ async def generate_report(start_date: str, end_date: str):
             animator_key = username if username else "Без аниматора"
             if animator_key not in animators_data:
                 display = f"{first_name} (@{username})" if first_name and username else (f"@{username}" if username else "Без аниматора")
-                animators_data[animator_key] = {
-                    "display_name": display,
-                    "groups": {}
-                }
+                animators_data[animator_key] = {"display_name": display, "groups": {}}
             
             if group_name not in animators_data[animator_key]["groups"]:
                 animators_data[animator_key]["groups"][group_name] = []
@@ -154,7 +276,6 @@ async def generate_report(start_date: str, end_date: str):
         return Response(content=f"Ошибка генерации PDF: {e}", status_code=500)
 
 def draw_animator_header(p, y, width, animator_name):
-    """Рисует заголовок аниматора"""
     p.setFont(FONT_NAME_BOLD, 14)
     p.drawString(20 * mm, y, f"Аниматор: {animator_name}")
     y -= 8 * mm
@@ -163,7 +284,6 @@ def draw_animator_header(p, y, width, animator_name):
     return y
 
 def draw_group_block(p, y, width, group_name, titles):
-    """Рисует подгруппу (например, '02.09 — 15.09') с таблицей роликов"""
     p.setFont(FONT_NAME_BOLD, 11)
     p.drawString(25 * mm, y, f"Период: {group_name}")
     y -= 6 * mm
