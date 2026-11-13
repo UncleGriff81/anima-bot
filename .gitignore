@@ -1,0 +1,4 @@
+anima.db
+__pycache__/
+*.pyc
+TG_bot/
